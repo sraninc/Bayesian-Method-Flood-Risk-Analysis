@@ -1,0 +1,132 @@
+---
+title: "ST540_Final_Project"
+author: "Sneha Rani"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+library(rjags)
+library(tidyverse)
+library(dataRetrieval)
+library(e1071)
+library(smwrBase)
+library(rje)
+source("helper.R")
+```
+
+### Load the data and run JAGS
+
+```{r}
+# Load the data
+
+data_raw <- read.csv("data.csv")
+Y1 <- data_raw[,2]
+n <- length(Y1)
+
+# Normalize distance
+X_temp <- data_raw[,1]
+maxdist <- max(X_temp)
+X_temp <- X_temp/maxdist
+
+p <- 2 # Number of covariates
+N <- 18 # Number of states
+
+X <- matrix(1,n,p)
+X[,2] <- X_temp
+
+id <- data_raw[,4]
+
+#nrow(filter(data_raw, huc2==1))
+
+
+iters = 20000
+burnin = 10000
+
+# Setting up the models
+model_1 <- textConnection("model{
+  for(i in 1:n){
+    Y[i] ~ dnorm(mu[i]+0.25, taue[id[i]])
+    logit(mu[i]) <- inprod(beta[id[i],], X[i,])
+  }
+
+  # Random slopes
+   for(j in 1:2){for(i in 1:N){
+    beta[i,j] ~ dnorm(mub[j],taub[j])
+    }
+    mub[j] ~ dnorm(0, 0.01)
+    taub[j] ~ dgamma(0.01,0.01)
+   }
+
+  #Priors
+  for(i in 1:N){
+    taue[i] ~ dgamma(0.1,0.1)
+  }
+
+}")
+
+# Plug the data, using 2 chains
+data <- list(Y=Y1, X=X, N=N, id=id, n=n)
+init   <- list(beta=matrix(0,N,p))
+model1 <- jags.model(model_1, data = data, n.chains = 2, quiet = TRUE, inits=init)
+
+#Burn-in for 5000 samples 
+update(model1, burnin)
+
+#Estimate the posteriors with 10000 post-burn-in samples
+samples1 <- coda.samples(model1, variable.names=c("beta"), n.iter=iters, n.thin = 5)
+DIC1 <- dic.samples(model1,n.iter=iters,n.thin = 5)
+```
+
+```{r}
+DIC1
+```
+
+```{r}
+summary(samples1)
+```
+
+```{r}
+gelman.diag(samples1)
+```
+
+```{r}
+geweke.diag(samples1[[1]])
+```
+
+```{r}
+par(mar = c(2, 2, 2, 2))
+plot(samples1)
+```
+
+```{r}
+ESS1 <- effectiveSize(samples1)
+hist(ESS1)
+```
+
+```{r}
+samp <- rbind(samples1[[1]], samples1[[2]])
+
+b0 <- samp[,1:18]
+b1 <- samp[,19:36]
+
+na     <- 100
+xs   <- seq(0,1,length=na) 
+
+for(i in 1:18){
+  plot(NA,xlim=c(0,1),ylim=c(0,1),xlab="Distance(relative)",ylab="Rho", xaxt="n", main=names[i])
+  axis(1, at = seq(0, 1, by = 0.1), las=2)
+  fit <- NULL
+    for(j in 1:na){fit <- cbind(fit,expit(b0[,i] + xs[j]*b1[,i])+0.25)}
+      q  <- apply(fit,2,quantile,c(0.025,0.5,0.975))
+      y <- filter(data_raw, huc2 == i)[,2]
+      x <- filter(data_raw, huc2 == i)[,1]/maxdist
+      points(x,y,pch=20,lwd = 0.2, col=alpha(rgb(1,0,0), 0.3))
+      lines(xs,q[1,],lty=2)
+      lines(xs,q[2,],lty=1)
+      lines(xs,q[3,],lty=2)
+      abline(h=0.25,lty=3, col="Blue")
+      legend("topright",c("Post mean","95% interval", "0.25 (independent)"),lty=c(1,2,3),col=c(1,1,"Blue"),bty="n")
+}
+```
